@@ -30,33 +30,39 @@
        (if if)
        (lambda lambda)))
 
-(defun if-typing (expr)
+(defvar *rules*
+  '(((math-op integer integer) integer)
+    ((eq integer integer) boolean)
+    ((if boolean integer integer) integer)
+    ((if boolean boolean boolean) boolean)))
+
+(defun type-if (expr)
   (if (and (eql (first expr) 'if)
            (eql (second expr) 'boolean)
            (eql (third expr) (fourth expr)))
       (third expr)
       nil))
 
-(defvar *rules*
-  `(((math-op integer integer) integer)
-    ((eq integer integer) boolean)
-    ,#'if-typing))
+(setf *rules*
+      `(((math-op integer integer) integer)
+        ((eq integer integer) boolean)
+        ,#'type-if))
 
-(defun get-type-from-rule (expr rules)
+(defun type-by-rule (expr rules)
   (if (null rules)
       (error "Expression ~a has incorrect types~%" expr)
       (let ((rule (car rules)))
         (if (functionp rule)
             (if (funcall rule expr)
                 (funcall rule expr)
-                (get-type-from-rule expr (cdr rules)))
+                (type-by-rule expr (cdr rules)))
             (if (equalp (first rule) expr)
                 (second rule)
-                (get-type-from-rule expr (cdr rules)))))))
+                (type-by-rule expr (cdr rules)))))))
 
 (defun type-check (rules env expr)
   (if (listp expr)
-      (get-type-from-rule
+      (type-by-rule
        (map 'list (lambda (x)
                     (type-check rules env x))
             expr)
