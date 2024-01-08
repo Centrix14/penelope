@@ -3,15 +3,19 @@
 #+startup: overview
 
 * Определение пакета
-Определим пакет, в котором будем работать.
+Чтобы не засорять пакет пользователя =cl-user= определим свой, рабочий пакет, где будут храниться все функции.
 #+begin_src lisp :tangle penelope.lisp
   (defpackage :penelope
     (:use :cl))
 
   (in-package :penelope)
 #+end_src
+
+#+RESULTS:
+: #<PACKAGE "PENELOPE">
 * Вычисление типов значений
 ** Простое получение типов
+Для начала просто изучим типизацию в Common Lisp. Сделать это можно при помощи функции =type-of=. Первое же исследование открывает интересные подробности:
 #+begin_src lisp
   (let ((x 14))
     (list (type-of 1) (type-of 14) (type-of x)))
@@ -19,6 +23,8 @@
 
 #+RESULTS:
 | BIT | (INTEGER 0 4611686018427387903) | (INTEGER 0 4611686018427387903) |
+
+Выходит, что 0 — это =BIT=, а вот 14 и x — =INTEGER=.
 
 Получается, что числа 0 и 1 считаются не числами, а битами. При том
 #+begin_src lisp
@@ -28,11 +34,10 @@
 #+RESULTS:
 : T
 
+Утвердительно кивает. Получается, что 1 является и битом и числом.
 Занятно!
-
 ** Безопасное вычисление типов
 Чтобы вычислять типы безопасно и абстрагироваться от всяких там =BIT= и =SIMPLE-ARRAY= напишем свою функцию.
-
 #+begin_src lisp :tangle penelope.lisp
   (defun ty (x)
     (typecase x
@@ -46,23 +51,22 @@
 : TY
 
 =ty= — это распространённое в профессиональной среде сокращение для слова /type/. Так что тут всё с именованием нормально.
-
 * Вычисление типов выражений
 ** Простой обход дерева с определением типов
-Простая функция, которая обходит дерево и возвращает типы его частей.
+Используя =ty= мы можем написать функцию, которая обходит дерево (выражение) и определяет типы его элементов.
 #+begin_src lisp
-  (defun get-typed-tree (expr)
+  (defun type-tree (expr)
     (if (listp expr)
-        (map 'list #'get-typed-tree expr)
+        (map 'list #'type-tree expr)
         (ty expr)))
 #+end_src
 
 #+RESULTS:
-: GET-TYPED-TREE
+: TYPE-TREE
 
 Применим функцию.
 #+begin_src lisp
-  (map 'list #'get-typed-tree
+  (map 'list #'type-tree
       '((1 t *)
         (* 2 2)
         (if (> x 2) x 2)
@@ -76,9 +80,8 @@
 | SYMBOL  | (SYMBOL SYMBOL INTEGER) | SYMBOL                  | INTEGER |
 | SYMBOL  | (SYMBOL)                | (SYMBOL SYMBOL INTEGER) |         |
 | SYMBOL  | SYMBOL                  | INTEGER                 |         |
-
 ** Работа в контексте
-Определение типов происходит в некотором контексте. Будем описывать его хэш-таблицей.
+Чтобы работать с переменными (на самом деле это будут не переменные, а привязки, константы) добавим контекст (окружение, environment).
 #+begin_src lisp :tangle penelope.lisp
   (defvar *env* (make-hash-table))
 #+end_src
@@ -119,15 +122,14 @@
 | IF     | IF      |
 | LAMBDA | LAMBDA  |
 
-Как можно видеть, мы делаем необычную вещь — присваиваем типы ещё и различным операторам (функциям) языка.
-
+Для упрощения кода здесь я решил схитрить — в контекст включены ещё и некоторые ключевые слова.
 ** Обход дерева с учётом контекста
-Теперь перепишем =get-typed-tree= с учётом контекста.
+Теперь перепишем =type-tree= с учётом контекста.
 #+begin_src lisp
-  (defun get-typed-tree (expr env)
+  (defun type-tree (expr env)
     (if (listp expr)
         (map 'list (lambda (x)
-                     (get-typed-tree x env))
+                     (type-tree x env))
              expr)
         (let ((type (gethash expr env)))
           (if type
@@ -136,21 +138,23 @@
 #+end_src
 
 #+RESULTS:
-: GET-TYPED-TREE
+: TYPE-TREE
 
 Проверим, как работает наша функция
 #+begin_src lisp
-  (get-typed-tree '(> age 2) *env*)
+  (type-tree '(> age 2) *env*)
 #+end_src
 
 #+RESULTS:
 | MATH-OP | INTEGER | INTEGER |
 
+Результат:
+#+RESULTS:
 ** Соотнесение типов
-Мы можем теперь определять типы выражений. Напишем же функцию, которая будет соотносить член выражения и его тип.
+Для удобства напишем функцию, которая будет ассоциировать элемент выражения и тип, ему соответствующий.
 #+begin_src lisp
   (defun assoc-type (expr env)
-    (map 'list #'list expr (get-typed-tree expr env)))
+    (map 'list #'list expr (type-tree expr env)))
 #+end_src
 
 #+RESULTS:
@@ -169,8 +173,8 @@
 
 * Полноценная проверка типов
 ** Правила типизации
-Правила типизации мы будем хранить в /ассоциативном списке/. Это по-началу может показаться странным, но позже мы поймём почему хэш-таблица не подходит.
-#+begin_src lisp
+Правила типизации мы будем хранить в /ассоциативном списке/. Конечно, мы можем хранить их и в хэш-таблице, так будет даже удобней, но есть одна проблема. Хэш-таблица даже в CL структура достаточно деревянная. Произвольные предикаты сравнения использовать нельзя, изменить порядок сравнения и всё такое прочее нельзя. Поэтому берём более медленный, но гибкий =alist=.
+#+begin_src lisp :tangle penelope.lisp
   (defvar *rules*
     '(((math-op integer integer) integer)
       ((eq integer integer) boolean)
@@ -180,11 +184,10 @@
 
 #+RESULTS:
 : *RULES*
-
 ** Получение типов по правилам
 Теперь напишем функцию, которая будет получать тип выражения на основе правил.
 #+begin_src lisp
-  (defun get-type-from-rule (expr rules)
+  (defun type-by-rule (expr rules)
     (let ((rule (assoc expr rules :test #'equalp)))
       (if rule
           (second rule)
@@ -192,11 +195,11 @@
 #+end_src
 
 #+RESULTS:
-: GET-TYPE-FROM-RULE
+: TYPE-BY-RULE
 
 Проверим, как работают наши правила.
 #+begin_src lisp
-  (get-type-from-rule '(math-op integer integer) *rules*)
+  (type-by-rule '(math-op integer integer) *rules*)
 #+end_src
 
 #+RESULTS:
@@ -206,20 +209,19 @@
 
 Так мы получаем 2 части проверки типов: функцию расстановки типов в произвольном дереве и функцию вывода типа по правилам. Посмотрим, как они работают в тандеме.
 #+begin_src lisp
-  (get-type-from-rule (get-typed-tree '(+ age 2) *env*) *rules*)
+  (type-by-rule (type-tree '(+ age 2) *env*) *rules*)
 #+end_src
 
 #+RESULTS:
 : INTEGER
 
 Работает как и задумано. Теперь остаётся объединить наши функции, чтобы получить полноценную проверку типов.
-
 ** Проверка типов
-По структуре, проверка типов будет такой же, как и =get-typed-tree=, мы лишь добавим вывод типов по правилам.
+По структуре, проверка типов будет такой же, как и =type-tree=, мы лишь добавим вывод типов по правилам.
 #+begin_src lisp
   (defun type-check (rules env expr)
     (if (listp expr)
-        (get-type-from-rule
+        (type-by-rule
          (map 'list (lambda (x)
                       (type-check rules env x))
               expr)
@@ -241,20 +243,13 @@
 #+RESULTS:
 : BOOLEAN
 
-Тип выведен верно. Никаких ошибок нет. Есть только одна проблема: правило типизации для =if= мы записали следующим образом: =((if boolean int int) int)=. Далее мы добавляем: =((if boolean boolean boolean) boolean)=. Почему? Всё потому, что вообще правило для =if= необходимо дать в общем виде:
-
-\[
-\frac{\Gamma \vdash v1 : \textrm{t} \quad \Gamma \vdash v2 : \textrm{t}
-\quad \Gamma \vdash c : \textrm{bool}}
-{\Gamma \vdash \textrm{v1 if c else v2} : \textrm{t}}.
-\]
+Тип выведен верно. Никаких ошибок нет. Есть только одна проблема: правило типизации для =if= мы записали следующим образом: =((if boolean int int) int)=. Далее мы добавляем: =((if boolean boolean boolean) boolean)=. Почему? Всё потому, что вообще правило для =if= необходимо дать в общем виде: =((if boolean t t) t)=.
 
 Но наша система сделать этого не позволяет. Что же делать? Можно попробовать доработать нашу систему и ввести в неё обобщённые типы, но это напрасные усилия. Давайте в список правил кроме шаблонов включать и просто функции. Это позволит сделать нашу систему безумно гибкой.
-
 ** Функция получения типа для условных конструкций
 Для начала напишем функцию, которая будет проверять типы в условных конструкциях.
 #+begin_src lisp :tangle penelope.lisp
-  (defun if-typing (expr)
+  (defun type-if (expr)
     (if (and (eql (first expr) 'if)
              (eql (second expr) 'boolean)
              (eql (third expr) (fourth expr)))
@@ -263,11 +258,11 @@
 #+end_src
 
 #+RESULTS:
-: IF-TYPING
+: TYPE-IF
 
 Проверим функцию.
 #+begin_src lisp
-  (map 'list #'if-typing
+  (map 'list #'type-if
        '((if boolean integer integer)
          (if boolean string string)
          (if boolean a b)))
@@ -275,58 +270,55 @@
 
 #+RESULTS:
 | INTEGER | STRING | NIL |
-
 ** Добавление функций в список правил
-Для начала давайте изменим список правил.
+Теперь изменим список правил.
 #+begin_src lisp :tangle penelope.lisp
-  (defvar *rules*
-    `(((math-op integer integer) integer)
-      ((eq integer integer) boolean)
-      ,#'if-typing))
+  (setf *rules*
+        `(((math-op integer integer) integer)
+          ((eq integer integer) boolean)
+          ,#'type-if))
 #+end_src
 
 #+RESULTS:
-: *RULES*
-
+: (((MATH-OP INTEGER INTEGER) INTEGER) ((EQ INTEGER INTEGER) BOOLEAN)
+:  #<FUNCTION TYPE-IF>)
 ** Улучшаем получение типов по правилам
 Теперь нам осталось несколько переписать функцию для взятия типов по правилам.
 #+begin_src lisp :tangle penelope.lisp
-  (defun get-type-from-rule (expr rules)
+  (defun type-by-rule (expr rules)
     (if (null rules)
         (error "Expression ~a has incorrect types~%" expr)
         (let ((rule (car rules)))
           (if (functionp rule)
               (if (funcall rule expr)
                   (funcall rule expr)
-                  (get-type-from-rule expr (cdr rules)))
+                  (type-by-rule expr (cdr rules)))
               (if (equalp (first rule) expr)
                   (second rule)
-                  (get-type-from-rule expr (cdr rules)))))))
+                  (type-by-rule expr (cdr rules)))))))
 #+end_src
 
 #+RESULTS:
-: GET-TYPE-FROM-RULE
+: TYPE-BY-RULE
 
-#+begin_src lisp :results value latex
+#+begin_src lisp
   (map 'list
        (lambda (expr)
-         (get-type-from-rule expr *rules*))
+         (type-by-rule expr *rules*))
        '((math-op integer integer)
          (eq integer integer)
          (if boolean ty ty)))
 #+end_src
 
 #+RESULTS:
-#+begin_export latex
 | INTEGER | BOOLEAN | TY |
-#+end_export
 
 ** Функция проверки типов: окончание
 Наконец, определим функцию проверки типов для новой системы работы с правилами.
 #+begin_src lisp :tangle penelope.lisp
   (defun type-check (rules env expr)
     (if (listp expr)
-        (get-type-from-rule
+        (type-by-rule
          (map 'list (lambda (x)
                       (type-check rules env x))
               expr)
@@ -339,7 +331,6 @@
 
 #+RESULTS:
 : TYPE-CHECK
-
 ** Испытания проверки типов
 А теперь испытаем наш код в реальном примере.
 #+begin_src lisp
